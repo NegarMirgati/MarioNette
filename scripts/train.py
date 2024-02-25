@@ -205,6 +205,12 @@ if __name__ == "__main__":
 
     # Representation
     parser.add_argument("--layer_size", type=int, default=8, help="size of anchor grid")
+    parser.add_argument(
+        "--sequence_length",
+        type=int,
+        default=2,
+        help="number of images in input sequence",
+    )
     parser.add_argument("--num_layers", type=int, default=2, help="number of layers")
     parser.add_argument(
         "--num_classes", type=int, default=150, help="size of dictioanry"
