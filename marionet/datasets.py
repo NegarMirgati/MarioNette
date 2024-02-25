@@ -63,9 +63,12 @@ class AnimationDataset(th.utils.data.Dataset):
         return im
 
     def __getitem__(self, idx):
-        im1 = self.get_item_helper(self, idx)
-        im2 = self.get_item_helper(self, idx + 1)
-        return {"im": th.cat([im1, im2], dim=0), "fname": self.files[idx]}
+        im1 = self.get_item_helper(idx)
+        im2 = self.get_item_helper(idx + 1)
+        return {
+            "im": th.cat([im1, im2], dim=0),
+            "fname": self.files[idx] + self.files[idx + 1],
+        }
 
 
 class RandomCropDataset(th.utils.data.Dataset):
