@@ -265,19 +265,20 @@ class Model(nn.Module):
             # )
             # NOTE: adding two encoders, one for player dynamics, and one for other sprite dynamics
             # NOTE: the below are transform sprites block
+            # NOTE: output is TANH, so the output range here is [-1, 1]
             self.player_shifts = nn.Sequential(
                 nn.Linear(dim_z, dim_z),
                 nn.GroupNorm(8, dim_z),
                 nn.LeakyReLU(),
                 nn.Linear(dim_z, 2),
-                nn.Tanh(),
+                nn.PReLU()(),
             )
             self.non_player_shift = nn.Sequential(
                 nn.Linear(dim_z, dim_z),
                 nn.GroupNorm(8, dim_z),
                 nn.LeakyReLU(),
                 nn.Linear(dim_z, 2),
-                nn.Tanh(),
+                nn.PReLU(),
             )
 
         # self.learned_dict = learned_dict
@@ -307,6 +308,71 @@ class Model(nn.Module):
                 )
         else:
             self.bg_color = nn.Parameter(th.tensor(bg_color), requires_grad=False)
+
+    def group(self, patches, bs: int):
+        # NOTE                  2  5    3  6
+        group1 = patches[..., ::2, :, ::2, :].contiguous()
+        group1 = group1.view(
+            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
+        )
+        group1 = group1[..., self.patch_size // 2 :, self.patch_size // 2 :]
+        # padding_right, padding_left, padding_top, padding_bottom
+        group1 = F.pad(group1, (0, self.patch_size // 2, 0, self.patch_size // 2))
+
+        group2 = patches[..., 1::2, :, 1::2, :].contiguous()
+        group2 = group2.view(
+            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
+        )
+        group2 = group2[..., : -self.patch_size // 2, : -self.patch_size // 2]
+        group2 = F.pad(group2, (self.patch_size // 2, 0, self.patch_size // 2, 0))
+
+        group3 = patches[..., 1::2, :, ::2, :].contiguous()
+        group3 = group3.view(
+            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
+        )
+        group3 = group3[..., : -self.patch_size // 2, self.patch_size // 2 :]
+        group3 = F.pad(group3, (0, self.patch_size // 2, self.patch_size // 2, 0))
+
+        group4 = patches[..., ::2, :, 1::2, :].contiguous()
+        group4 = group4.view(
+            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
+        )
+        group4 = group4[..., self.patch_size // 2 :, : -self.patch_size // 2]
+        group4 = F.pad(group4, (self.patch_size // 2, 0, 0, self.patch_size // 2))
+
+        return th.stack([group1, group2, group3, group4], dim=2)
+
+    def apply_transofrmation(self, patches, codes_xform, key: str):
+        if key == "player":
+            shifts = self.player_shifts(codes_xform)
+        else:
+            shifts = self.non_player_shifts(codes_xform)
+
+        theta = th.eye(2)[None].repeat(shifts.shape[0], 1, 1).to(shifts)
+        theta = th.cat([theta, -shifts[:, :, None]], dim=-1)
+        grid = F.affine_grid(
+            theta,
+            [patches.shape[0], 1, self.patch_size * 2, self.patch_size * 2],
+            align_corners=False,
+        )
+
+        patches_rgb, patches_a = th.split(patches, [3, 1], dim=1)
+        patches_rgb = F.grid_sample(
+            patches_rgb,
+            grid,
+            align_corners=False,
+            padding_mode="border",
+            mode="bilinear",
+        )
+        patches_a = F.grid_sample(
+            patches_a,
+            grid,
+            align_corners=False,
+            padding_mode="zeros",
+            mode="bilinear",
+        )
+        patches = th.cat([patches_rgb, patches_a], dim=1)
+        return patches
 
     def forward(self, im, bg, hard=False, custom_dict=None, rng=None, custom_bg=None):
         bs = im.shape[0]
@@ -361,34 +427,13 @@ class Model(nn.Module):
         patches_player = patches_player.flatten(0, 3)
         patches_non_player = patches_non_player.flatten(0, 3)
 
-        # NOTE: now create images of those patches
-        # im_patches = F.pad(im, (self.patch_size // 2,) * 4)
-        im_patches_player = F.pad(im, (self.patch_size // 2,) * 4)
-        im_patches_non_player = F.pad(im, (self.patch_size // 2,) * 4)
+        im_patches = F.pad(im[-1], (self.patch_size // 2,) * 4)
 
-        # im_patches = im_patches.unfold(2, self.patch_size * 2, self.patch_size).unfold(
-        #     3, self.patch_size * 2, self.patch_size
-        # )
-        im_patches_player = im_patches_player.unfold(
-            2, self.patch_size * 2, self.patch_size
-        ).unfold(3, self.patch_size * 2, self.patch_size)
-        im_patches_non_player = im_patches_non_player.unfold(
-            2, self.patch_size * 2, self.patch_size
-        ).unfold(3, self.patch_size * 2, self.patch_size)
-        # im_patches = (
-        #     im_patches.reshape(
-        #         bs,
-        #         3,
-        #         self.layer_size,
-        #         self.layer_size,
-        #         2 * self.patch_size,
-        #         2 * self.patch_size,
-        #     )
-        #     .permute(0, 2, 3, 1, 4, 5)
-        #     .contiguous()
-        # )
-        im_patches_player = (
-            im_patches_player.reshape(
+        im_patches = im_patches.unfold(2, self.patch_size * 2, self.patch_size).unfold(
+            3, self.patch_size * 2, self.patch_size
+        )
+        im_patches = (
+            im_patches.reshape(
                 bs,
                 3,
                 self.layer_size,
@@ -399,31 +444,8 @@ class Model(nn.Module):
             .permute(0, 2, 3, 1, 4, 5)
             .contiguous()
         )
-        im_patches_non_player = (
-            im_patches_non_player.reshape(
-                bs,
-                3,
-                self.layer_size,
-                self.layer_size,
-                2 * self.patch_size,
-                2 * self.patch_size,
-            )
-            .permute(0, 2, 3, 1, 4, 5)
-            .contiguous()
-        )
-        # im_patches = (
-        #     im_patches[:, None].repeat(1, self.num_layers, 1, 1, 1, 1, 1).flatten(0, 3)
-        # )
-        im_patches_player = (
-            im_patches_player[:, None]
-            .repeat(1, self.num_layers, 1, 1, 1, 1, 1)
-            .flatten(0, 3)
-        )
-
-        im_patches_non_player = (
-            im_patches_non_player[:, None]
-            .repeat(1, self.num_layers, 1, 1, 1, 1, 1)
-            .flatten(0, 3)
+        im_patches = (
+            im_patches[:, None].repeat(1, self.num_layers, 1, 1, 1, 1, 1).flatten(0, 3)
         )
 
         # codes_xform = (
@@ -434,84 +456,100 @@ class Model(nn.Module):
         #
 
         # NOTE: perform spatial transformation for player and non-player separately
+        # NOTE concat image and encoder created patches along the layer dimension
         codes_xform_player = (
-            self.encoder_player_dynamics(
-                th.cat([im_patches_player, patches_player], dim=1)
-            )[0]
+            self.encoder_player_dynamics(th.cat([im_patches, patches_player], dim=1))[0]
             .squeeze(-2)
             .squeeze(-2)
         )
 
         codes_xform_non_player = (
             self.encoder_non_player_dynamics(
-                th.cat([im_patches_non_player, patches_non_player], dim=1)
+                th.cat([im_patches, patches_non_player], dim=1)
             )[0]
             .squeeze(-2)
             .squeeze(-2)
         )
 
         if hard:
-            weights = th.eye(weights.shape[-1]).to(weights)[weights.argmax(-1)]
+            # weights = th.eye(weights.shape[-1]).to(weights)[weights.argmax(-1)]
+            weights_player = th.eye(weights_player.shape[-1]).to(weights_player)[
+                weights_player.argmax(-1)
+            ]
+            weights_non_player = th.eye(weights_non_player.shape[-1]).to(
+                weights_non_player
+            )[weights_non_player.argmax(-1)]
+
             probs = probs.round()
-            patches = (weights[..., None, None, None] * learned_dict).sum(4)
-            patches = patches.flatten(0, 3)
+            # patches = (weights[..., None, None, None] * learned_dict).sum(4)
+
+            patches_player = (
+                weights_player[..., None, None, None] * learned_dict_player
+            ).sum(4)
+            patches_non_player = (
+                weights_non_player[..., None, None, None] * learned_dict_non_player
+            ).sum(4)
+
+            # patches = patches.flatten(0, 3)
+            patches_player = patches_player.flatten(0, 3)
+            patches_non_player = patches_non_player.flatten(0, 3)
 
         if custom_dict is not None:
             learned_dict = custom_dict
-            patches = (weights[..., None, None, None] * learned_dict).sum(4)
-            patches = patches.flatten(0, 3)
+            # patches = (weights[..., None, None, None] * learned_dict).sum(4)
+            patches_player = (
+                weights_player[..., None, None, None] * learned_dict_player
+            ).sum(4)
+            patches_non_player = (
+                weights_non_player[..., None, None, None] * learned_dict_non_player
+            ).sum(4)
+
+            # patches = patches.flatten(0, 3)
+            patches_player = patches_player.flatten(0, 3)
+            patches_non_player = patches_player.flatten(0, 3)
 
         # NOTE: now we have two patches, one for player and one for non-player
         # patches = patches * probs[:, :, None, None]
-        patches = patches * probs[:, :, None, None]
+        patches_player = patches_player * probs[:, :, None, None]
+        patches_non_player = patches_non_player * probs[:, :, None, None]
 
         if self.no_spatial_transformer:
-            xforms_x = self.xforms_x(codes_xform)
-            xforms_y = self.xforms_y(codes_xform)
+            # xforms_x = self.xforms_x(codes_xform)
+            # xforms_y = self.xforms_y(codes_xform)
 
-            if hard:
-                xforms_x = th.eye(xforms_x.shape[-1]).to(xforms_x)[xforms_x.argmax(-1)]
-                xforms_y = th.eye(xforms_y.shape[-1]).to(xforms_y)[xforms_y.argmax(-1)]
+            # if hard:
+            #     xforms_x = th.eye(xforms_x.shape[-1]).to(xforms_x)[xforms_x.argmax(-1)]
+            #     xforms_y = th.eye(xforms_y.shape[-1]).to(xforms_y)[xforms_y.argmax(-1)]
 
-            patches = F.pad(patches, (self.patch_size // 2,) * 4)
-            patches = patches.unfold(2, self.patch_size * 2, 1)
-            patches = (patches * xforms_y[:, None, :, None, None]).sum(2)
-            patches = patches.unfold(2, self.patch_size * 2, 1)
-            patches = (patches * xforms_x[:, None, :, None, None]).sum(2)
+            # patches = F.pad(patches, (self.patch_size // 2,) * 4)
+            # patches = patches.unfold(2, self.patch_size * 2, 1)
+            # patches = (patches * xforms_y[:, None, :, None, None]).sum(2)
+            # patches = patches.unfold(2, self.patch_size * 2, 1)
+            # patches = (patches * xforms_x[:, None, :, None, None]).sum(2)
+            # NOTE: this is not going to be used, so I have commented it for now for the sake of simplicity.
+            pass
         else:
             # shifts = self.shifts(codes_xform) / 2
             # NOTE: preform shift on player xforms
-            shifts_player = self.player_shifts(codes_xform_player) / 2
-
-            # NOTE: preform shift on non-player xforms
-            shifts_non_player = self.non_player_shifts(codes_xform_non_player) / 2
-
-            theta = th.eye(2)[None].repeat(shifts.shape[0], 1, 1).to(shifts)
-            theta = th.cat([theta, -shifts[:, :, None]], dim=-1)
-            grid = F.affine_grid(
-                theta,
-                [patches.shape[0], 1, self.patch_size * 2, self.patch_size * 2],
-                align_corners=False,
+            # NOTE: range here -> (-1/2, 1/2)
+            patches_player = self.apply_transofrmation(
+                patches_player, codes_xform_player
+            )
+            patches_non_player = self.apply_transofrmation(
+                patches_non_player, codes_xform_non_player
             )
 
-            patches_rgb, patches_a = th.split(patches, [3, 1], dim=1)
-            patches_rgb = F.grid_sample(
-                patches_rgb,
-                grid,
-                align_corners=False,
-                padding_mode="border",
-                mode="bilinear",
-            )
-            patches_a = F.grid_sample(
-                patches_a,
-                grid,
-                align_corners=False,
-                padding_mode="zeros",
-                mode="bilinear",
-            )
-            patches = th.cat([patches_rgb, patches_a], dim=1)
+        # patches = patches.view(
+        #     bs,  # 0
+        #     self.num_layers,  # 1
+        #     self.layer_size,  # 2
+        #     self.layer_size,  # 3
+        #     -1,  # 4
+        #     2 * self.patch_size,  # 5
+        #     2 * self.patch_size,  # 6
+        # ).permute(0, 1, 4, 2, 5, 3, 6)
 
-        patches = patches.view(
+        patches_player = patches_player.view(
             bs,
             self.num_layers,
             self.layer_size,
@@ -521,35 +559,19 @@ class Model(nn.Module):
             2 * self.patch_size,
         ).permute(0, 1, 4, 2, 5, 3, 6)
 
-        group1 = patches[..., ::2, :, ::2, :].contiguous()
-        group1 = group1.view(
-            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
-        )
-        group1 = group1[..., self.patch_size // 2 :, self.patch_size // 2 :]
-        group1 = F.pad(group1, (0, self.patch_size // 2, 0, self.patch_size // 2))
+        patches_non_player = patches_non_player.view(
+            bs,
+            self.num_layers,
+            self.layer_size,
+            self.layer_size,
+            -1,
+            2 * self.patch_size,
+            2 * self.patch_size,
+        ).permute(0, 1, 4, 2, 5, 3, 6)
 
-        group2 = patches[..., 1::2, :, 1::2, :].contiguous()
-        group2 = group2.view(
-            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
-        )
-        group2 = group2[..., : -self.patch_size // 2, : -self.patch_size // 2]
-        group2 = F.pad(group2, (self.patch_size // 2, 0, self.patch_size // 2, 0))
-
-        group3 = patches[..., 1::2, :, ::2, :].contiguous()
-        group3 = group3.view(
-            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
-        )
-        group3 = group3[..., : -self.patch_size // 2, self.patch_size // 2 :]
-        group3 = F.pad(group3, (0, self.patch_size // 2, self.patch_size // 2, 0))
-
-        group4 = patches[..., ::2, :, 1::2, :].contiguous()
-        group4 = group4.view(
-            bs, self.num_layers, -1, self.canvas_size, self.canvas_size
-        )
-        group4 = group4[..., self.patch_size // 2 :, : -self.patch_size // 2]
-        group4 = F.pad(group4, (self.patch_size // 2, 0, 0, self.patch_size // 2))
-
-        layers = th.stack([group1, group2, group3, group4], dim=2)
+        layers_player = self.group(patches_player, bs)
+        layers_non_player = self.group(patches_non_player, bs)
+        layers = th.cat([layers_player, layers_non_player], dim=1)
         layers_out = layers.clone()
 
         if self.shuffle_all:
@@ -558,7 +580,7 @@ class Model(nn.Module):
             layers = layers[:, :, th.randperm(4)].flatten(1, 2)
 
         if bg is not None:
-            bg_codes = self.bg_encoder(im)[0].squeeze(-2).squeeze(-2)
+            bg_codes = self.bg_encoder(im[-1])[0].squeeze(-2).squeeze(-2)
             if not self.spatial_transformer_bg:
                 bg_x = self.bg_x(bg_codes)
                 bgs = bg.squeeze(0).unfold(2, self.canvas_size, 1)
@@ -614,20 +636,24 @@ class Model(nn.Module):
             "weights_non_player": weights_non_player,
             "probs": probs.view(bs, self.num_layers, -1),
             "layers": layers_out,
-            "patches": patches,
+            # "patches": patches,
+            "patches_player": patches_player,
+            "patches_non_player": patches_non_player,
             # "dict_codes": dict_codes,
             "dict_codes_player": dict_codes_player,
             "dict_codes_non_player": dict_codes_non_player,
             "im_codes": im_codes.flatten(0, 1),
             "reconstruction": out,
-            "dict": learned_dict,
+            # "dict": learned_dict,
             "dict_player": learned_dict_player,
+            "dict_non_player": learned_dict_non_player,
             "background": bg,
         }
 
-        if not self.no_spatial_transformer:
-            # ret["shifts"] = shifts
-            ret["shifts_player"] = shifts_player
-            ret["shifts_non_player"] = shifts_non_player
+        # We are going to do spatial transformation - commented this for simplicity
+        # if not self.no_spatial_transformer:
+        #     # ret["shifts"] = shifts
+        #     ret["shifts_player"] = shifts_player
+        #     ret["shifts_non_player"] = shifts_non_player
 
         return ret

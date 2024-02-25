@@ -62,7 +62,7 @@ class Interface(ttools.ModelInterface):
         layers = fwd_data["layers"]
         out_hard = fwd_data_hard["reconstruction"]
         layers_hard = fwd_data_hard["layers"]
-        im = imops.crop_like(im, out)
+        im = imops.crop_like(im[-1], out)
 
         # NOTE: now we have two dicts
         # learned_dict = fwd_data["dict"]
@@ -81,7 +81,8 @@ class Interface(ttools.ModelInterface):
 
         rec_loss = self.loss(out, im)
         beta_loss = (
-            self.beta.log_prob(weights.clamp(1e-5, 1 - 1e-5)).exp().mean()
+            self.beta.log_prob(weights_player.clamp(1e-5, 1 - 1e-5)).exp().mean()
+            + self.beta.log_prob(weights_non_player.clamp(1e-5, 1 - 1e-5)).exp().mean()
             + self.beta.log_prob(probs.clamp(1e-5, 1 - 1e-5)).exp().mean()
         ) / 2
 
