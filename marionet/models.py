@@ -271,7 +271,7 @@ class Model(nn.Module):
                 nn.GroupNorm(8, dim_z),
                 nn.LeakyReLU(),
                 nn.Linear(dim_z, 2),
-                nn.PReLU()(),
+                nn.PReLU(),
             )
             self.non_player_shift = nn.Sequential(
                 nn.Linear(dim_z, dim_z),
