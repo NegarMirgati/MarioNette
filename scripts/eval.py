@@ -101,13 +101,28 @@ def main(args):
             learned_dict_player[idx].permute(1, 2, 0).detach().cpu().numpy() * 256
         ).astype(np.uint8)
         img = Image.fromarray(t, mode="RGBA")
-        img.save(f"./my_image_{idx}.png")
+        img.save(f"./output_images/player/my_image_{idx}.png")
+
+        imgs.append(img)
+
+    imgs = []
+    for group in range(len(imgs) // 15):
+        image_grid(imgs[group * 15 : (group + 1) * 15], 3, 5).save(
+            f"./output_images/player/my_result_grid_{group}.png"
+        )
+
+    for idx in range(learned_dict_non_player.shape[0]):
+        t = (
+            learned_dict_non_player[idx].permute(1, 2, 0).detach().cpu().numpy() * 256
+        ).astype(np.uint8)
+        img = Image.fromarray(t, mode="RGBA")
+        img.save(f"./output_images/non_player/my_image_{idx}.png")
 
         imgs.append(img)
 
     for group in range(len(imgs) // 15):
         image_grid(imgs[group * 15 : (group + 1) * 15], 3, 5).save(
-            f"./my_result_grid_{group}.png"
+            f"./output_images/non_player/my_result_{group}.png"
         )
 
 

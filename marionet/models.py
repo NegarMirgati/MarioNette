@@ -123,6 +123,7 @@ class Encoder(nn.Module):
         self.layer_sizes = layer_sizes
         self.num_channels = num_channels
         self.no_layernorm = no_layernorm
+        self.is_sequential = is_sequential
 
         # This should represent number of down blocks
         num_ds = int(np.log2(canvas_size / min(layer_sizes)))
@@ -147,9 +148,9 @@ class Encoder(nn.Module):
         for my_counter, _block in enumerate(self.blocks):
             y, mask = _block(y, mask)  # encoding + downsampling step
 
-            if my_counter == len(self.blocks) - 1:
-                print("y shape", y.shape)
-                print("mask shape", mask.shape)
+            if my_counter == len(self.blocks) - 1 and self.is_sequential:
+                # print("y shape", y.shape)
+                # print("mask shape", mask.shape)
                 # y = F.avg_pool3d(y, kernel_size=(1, 1, 2), stride=1)
                 y = th.flatten(y, -2, -1)
                 mask = th.flatten(mask, -2, -1)
@@ -223,14 +224,15 @@ class Model(nn.Module):
         # self.encoder_xform = Encoder(
         #     7, self.patch_size * 2, [1], dim_z, no_layernorm=no_layernorm
         # )
-        # NOTE: player dynamics encoder
+
         self.encoder_player_dynamics = Encoder(
             7, self.patch_size * 2, [1], dim_z, no_layernorm=no_layernorm
         )
-        # NOTE: non-player dynamics encoder
+
         self.encoder_non_player_dynamics = Encoder(
             7, self.patch_size * 2, [1], dim_z, no_layernorm=no_layernorm
         )
+
         self.probs = nn.Sequential(
             nn.Linear(dim_z, dim_z),
             nn.GroupNorm(8, dim_z),
@@ -263,9 +265,6 @@ class Model(nn.Module):
             #     nn.Linear(dim_z, 2),
             #     nn.Tanh(),
             # )
-            # NOTE: adding two encoders, one for player dynamics, and one for other sprite dynamics
-            # NOTE: the below are transform sprites block
-            # NOTE: output is TANH, so the output range here is [-1, 1]
             self.player_shifts = nn.Sequential(
                 nn.Linear(dim_z, dim_z),
                 nn.GroupNorm(8, dim_z),
@@ -273,7 +272,7 @@ class Model(nn.Module):
                 nn.Linear(dim_z, 2),
                 nn.PReLU(),
             )
-            self.non_player_shift = nn.Sequential(
+            self.non_player_shifts = nn.Sequential(
                 nn.Linear(dim_z, dim_z),
                 nn.GroupNorm(8, dim_z),
                 nn.LeakyReLU(),
@@ -282,7 +281,6 @@ class Model(nn.Module):
             )
 
         # self.learned_dict = learned_dict
-        # NOTE: new dictionary for player sprites
         self.learned_dict_player = learned_dict_player
         self.learned_dict_non_player = learned_dict_non_player
 
@@ -378,7 +376,6 @@ class Model(nn.Module):
         bs = im.shape[0]
 
         # learned_dict, dict_codes = self.learned_dict()
-        # NOTE: new player and non-player dict
         learned_dict_player, dict_codes_player = self.learned_dict_player()
         learned_dict_non_player, dict_codes_non_player = self.learned_dict_non_player()
 
@@ -390,12 +387,11 @@ class Model(nn.Module):
             learned_dict_non_player = learned_dict_non_player[rng]
             dict_codes_non_player = dict_codes_non_player[rng]
 
-        im_codes = th.stack(self.im_encoder(im), dim=1)
+        # print(im.size())
+        im_codes = th.stack(self.im_encoder(im.permute(0, 2, 3, 4, 1)), dim=1)
         probs = self.probs(im_codes.flatten(0, 3))
         if self.straight_through_probs:
             probs = probs.round() - probs.detach() + probs
-
-        # NOTE: now we have two sets of logits, one applying player codes and one non-player codes
 
         # logits = (self.project(im_codes) @ dict_codes.transpose(0, 1)) / np.sqrt(
         #     im_codes.shape[-1]
@@ -406,13 +402,10 @@ class Model(nn.Module):
         logits_non_player = (
             self.project(im_codes) @ dict_codes_non_player.transpose(0, 1)
         ) / np.sqrt(im_codes.shape[-1])
-        # NOTE: applying softmax on logits - now we need one for each player and non-player
 
         # weights = F.softmax(logits, dim=-1)
         weights_player = F.softmax(logits_player, dim=-1)
         weights_non_player = F.softmax(logits_non_player, dim=-1)
-
-        # NOTE: let's obtain the patches now
 
         # patches = (weights[..., None, None, None] * learned_dict).sum(4)
 
@@ -426,8 +419,9 @@ class Model(nn.Module):
         # patches = patches.flatten(0, 3)
         patches_player = patches_player.flatten(0, 3)
         patches_non_player = patches_non_player.flatten(0, 3)
-
-        im_patches = F.pad(im[-1], (self.patch_size // 2,) * 4)
+        # print(im[:, -1, :, :, :].squeeze().size())
+        # print(im[:, -1, :, :, :].size())
+        im_patches = F.pad(im[:, -1, :, :, :], (self.patch_size // 2,) * 4)
 
         im_patches = im_patches.unfold(2, self.patch_size * 2, self.patch_size).unfold(
             3, self.patch_size * 2, self.patch_size
@@ -455,8 +449,6 @@ class Model(nn.Module):
         # )
         #
 
-        # NOTE: perform spatial transformation for player and non-player separately
-        # NOTE concat image and encoder created patches along the layer dimension
         codes_xform_player = (
             self.encoder_player_dynamics(th.cat([im_patches, patches_player], dim=1))[0]
             .squeeze(-2)
@@ -506,9 +498,8 @@ class Model(nn.Module):
 
             # patches = patches.flatten(0, 3)
             patches_player = patches_player.flatten(0, 3)
-            patches_non_player = patches_player.flatten(0, 3)
+            patches_non_player = patches_non_player.flatten(0, 3)
 
-        # NOTE: now we have two patches, one for player and one for non-player
         # patches = patches * probs[:, :, None, None]
         patches_player = patches_player * probs[:, :, None, None]
         patches_non_player = patches_non_player * probs[:, :, None, None]
@@ -530,13 +521,11 @@ class Model(nn.Module):
             pass
         else:
             # shifts = self.shifts(codes_xform) / 2
-            # NOTE: preform shift on player xforms
-            # NOTE: range here -> (-1/2, 1/2)
             patches_player = self.apply_transofrmation(
-                patches_player, codes_xform_player
+                patches_player, codes_xform_player, "player"
             )
             patches_non_player = self.apply_transofrmation(
-                patches_non_player, codes_xform_non_player
+                patches_non_player, codes_xform_non_player, "non_player"
             )
 
         # patches = patches.view(
@@ -630,7 +619,6 @@ class Model(nn.Module):
             out = (1 - a[:, i]) * out + a[:, i] * rgb[:, i]
 
         ret = {
-            # NOTE: now we have two sets of weights
             # "weights": weights,
             "weights_player": weights_player,
             "weights_non_player": weights_non_player,

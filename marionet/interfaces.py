@@ -62,12 +62,12 @@ class Interface(ttools.ModelInterface):
         layers = fwd_data["layers"]
         out_hard = fwd_data_hard["reconstruction"]
         layers_hard = fwd_data_hard["layers"]
-        im = imops.crop_like(im[-1], out)
+        im = imops.crop_like(im[:, -1, :, :, :], out)
 
         # NOTE: now we have two dicts
         # learned_dict = fwd_data["dict"]
-        learned_dict_player = fwd_data["dict"]
-        learned_dict_non_player = fwd_data["dict"]
+        learned_dict_player = fwd_data["dict_player"]
+        learned_dict_non_player = fwd_data["dict_non_player"]
         # dict_codes = fwd_data["dict_codes"]
         dict_codes_player = fwd_data["dict_codes_player"]
         dict_codes_non_player = fwd_data["dict_codes_non_player"]
@@ -119,6 +119,8 @@ class Interface(ttools.ModelInterface):
             # "dict": learned_dict.detach(),
             "dict_player": learned_dict_player.detach(),
             "dict_non_player": learned_dict_non_player.detach(),
+            "dict_codes_player": dict_codes_player.detach(),
+            "dict_codes_non_player": dict_codes_non_player.detach(),
             "probs_loss": probs_loss.mean().item(),
             "im_codes": im_codes.detach(),
             # "dict_codes": dict_codes.detach(),
