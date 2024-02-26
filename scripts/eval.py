@@ -104,13 +104,12 @@ def main(args):
         img.save(f"./output_images/player/my_image_{idx}.png")
 
         imgs.append(img)
-
-    imgs = []
     for group in range(len(imgs) // 15):
         image_grid(imgs[group * 15 : (group + 1) * 15], 3, 5).save(
             f"./output_images/player/my_result_grid_{group}.png"
         )
 
+    imgs = []
     for idx in range(learned_dict_non_player.shape[0]):
         t = (
             learned_dict_non_player[idx].permute(1, 2, 0).detach().cpu().numpy() * 256
