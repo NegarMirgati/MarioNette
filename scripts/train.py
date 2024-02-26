@@ -186,7 +186,10 @@ def main(args):
         )
     )
     trainer.add_callback(
-        callbacks.DictCallback(writer=writer, val_writer=None, frequency=2000)
+        callbacks.DictCallbackPlayer(writer=writer, val_writer=None, frequency=2000)
+    )
+    trainer.add_callback(
+        callbacks.DictCallbackNonPlayer(writer=writer, val_writer=None, frequency=2000)
     )
     trainer.add_callback(
         callbacks.BackgroundCallback(writer=writer, val_writer=None, frequency=2000)
