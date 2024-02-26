@@ -15,6 +15,13 @@ from .partialconv import PartialConv2d
 from .partialconv3d import PartialConv3d
 
 
+def my_clip(value, max_num):
+    if value >= max_num:
+        return max_num
+    else:
+        return 1
+
+
 class Dictionary(nn.Module):
     def __init__(
         self,
@@ -202,6 +209,7 @@ class Model(nn.Module):
         self.no_spatial_transformer = no_spatial_transformer
         self.spatial_transformer_bg = spatial_transformer_bg
         self.straight_through_probs = straight_through_probs
+        self.sequence_length = sequence_length
 
         self.im_encoder = Encoder(
             3,
@@ -564,7 +572,9 @@ class Model(nn.Module):
         layers_out = layers.clone()
 
         if self.shuffle_all:
-            layers = layers.flatten(1, 2)[:, th.randperm(4 * self.num_layers)]
+            layers = layers.flatten(1, 2)[
+                :, th.randperm(4 * self.num_layers * my_clip(self.sequence_length, 2))
+            ]
         else:
             layers = layers[:, :, th.randperm(4)].flatten(1, 2)
 
@@ -615,7 +625,7 @@ class Model(nn.Module):
 
         rgb, a = th.split(layers, [3, 1], dim=2)
 
-        for i in range(4 * self.num_layers):
+        for i in range(4 * self.num_layers * my_clip(self.sequence_length, 2)):
             out = (1 - a[:, i]) * out + a[:, i] * rgb[:, i]
 
         ret = {

@@ -48,9 +48,9 @@ class VizCallback(cb.TensorBoardImageDisplayCallback):
         return th.clamp(viz, 0, 1)
 
 
-class DictCallback(cb.TensorBoardImageDisplayCallback):
+class DictCallbackPlayer(cb.TensorBoardImageDisplayCallback):
     def tag(self):
-        return "dictionary"
+        return "player_dict"
 
     def visualized_image(self, batch, fwd_data):
         dictionary = fwd_data["dict_player"].cpu()
@@ -65,6 +65,31 @@ class DictCallback(cb.TensorBoardImageDisplayCallback):
 
         # Checkerboard background for tranparency
         psz = dictionary.shape[-1]
+        bg = th.ones(1, 3, psz // 8, 8, psz // 8, 8)
+        bg[:, :, ::2, :, ::2] = 0.8
+        bg[:, :, 1::2, :, 1::2] = 0.8
+        bg = bg.flatten(2, 3).flatten(3, 4)
+
+        return th.clamp(bg * (1 - alpha) + color * alpha, 0, 1)
+
+
+class DictCallbackNonPlayer(cb.TensorBoardImageDisplayCallback):
+    def tag(self):
+        return "non_player_dict"
+
+    def visualized_image(self, batch, fwd_data):
+        dictionary_n = fwd_data["dict_non_player"].cpu()
+        dict_codes_n = fwd_data["dict_codes_non_player"].cpu().detach()
+
+        tsne = TSNE(n_components=1, metric="cosine", square_distances=True)
+        xf_codes = tsne.fit_transform(dict_codes_n).squeeze()
+        dictionary_n = dictionary_n[xf_codes.argsort()]
+
+        color = dictionary_n[:, :-1]
+        alpha = dictionary_n[:, -1:]
+
+        # Checkerboard background for tranparency
+        psz = dictionary_n.shape[-1]
         bg = th.ones(1, 3, psz // 8, 8, psz // 8, 8)
         bg[:, :, ::2, :, ::2] = 0.8
         bg[:, :, 1::2, :, 1::2] = 0.8
