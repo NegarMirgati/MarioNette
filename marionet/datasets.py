@@ -22,6 +22,7 @@ class AnimationDataset(th.utils.data.Dataset):
             self.files,
             key=lambda f: int("".join(x for x in os.path.basename(f) if x.isdigit())),
         )
+        self.files = self.files[:107]
 
         colors = []
         for f in np.random.choice(
