@@ -579,7 +579,7 @@ class Model(nn.Module):
             layers = layers[:, :, th.randperm(4)].flatten(1, 2)
 
         if bg is not None:
-            bg_codes = self.bg_encoder(im[-1])[0].squeeze(-2).squeeze(-2)
+            bg_codes = self.bg_encoder(im[:, -1, :, :, :])[0].squeeze(-2).squeeze(-2)
             if not self.spatial_transformer_bg:
                 bg_x = self.bg_x(bg_codes)
                 bgs = bg.squeeze(0).unfold(2, self.canvas_size, 1)
