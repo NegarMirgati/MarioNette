@@ -21,6 +21,7 @@ class VizCallback(cb.TensorBoardImageDisplayCallback):
     def visualized_image(self, batch, fwd_data):
         image = batch["im"].detach()
         print("here ......", image.size())
+        image_0 = image[:, :1, :, :, :]
         image = image[:, -1, :, :, :]
         image = F.pad(image, (1, 1, 1, 1), value=0)
 
@@ -29,7 +30,7 @@ class VizCallback(cb.TensorBoardImageDisplayCallback):
 
         diff = (image - out).abs() * 4
 
-        layers = [image, out, diff]
+        layers = [image_0, image, out, diff]
         for i in range(fwd_data[f"layers{self.suffix}"].shape[1]):
             layer = fwd_data[f"layers{self.suffix}"][:, i].cpu().detach()
             rgb, a = th.split(layer, [3, 1], dim=2)
